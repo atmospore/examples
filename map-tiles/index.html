@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pollen map</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css">
+  <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+  <style>
+    html, body, #map { margin: 0; height: 100%; }
+    #controls { position: absolute; top: 10px; left: 10px; z-index: 1;
+                background: white; padding: 8px; border-radius: 8px; font: 14px sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <select id="species">
+      <option value="grass_tot">Grass</option>
+      <option value="tree_tot">Trees</option>
+      <option value="weed_tot">Weeds</option>
+      <option value="birch">Birch</option>
+    </select>
+    <select id="day"></select>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    // Risk levels in grains/m³: moderate, high and very high start at these values.
+    const THRESHOLDS = {
+      tree: [15, 90, 1500],
+      grass: [5, 20, 200],
+      weed: [10, 50, 500],
+    };
+    const CATEGORY = { grass_tot: "grass", tree_tot: "tree", weed_tot: "weed", birch: "tree" };
+
+    // Colour each cell by the risk level of one species.
+    function fillColor(species) {
+      const [moderate, high, veryHigh] = THRESHOLDS[CATEGORY[species]];
+      return [
+        "step", ["coalesce", ["get", species], 0], // missing value = 0
+        "rgba(0, 0, 0, 0)",   // low: transparent
+        moderate, "#fde047",  // moderate: yellow
+        high, "#f97316",      // high: orange
+        veryHigh, "#dc2626",  // very high: red
+      ];
+    }
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: "https://tiles.openfreemap.org/styles/positron", // free basemap, no key
+      center: [10, 50],
+      zoom: 3,
+    });
+
+    map.on("load", async () => {
+      const pollen = await (await fetch("/pollen-tiles")).json();
+
+      map.addSource("pollen", {
+        type: "vector",
+        tiles: pollen.tiles,       // today's {z}/{x}/{y} URL
+        minzoom: pollen.minzoom,
+        maxzoom: pollen.maxzoom,   // MapLibre zooms in past 5 on its own
+        attribution: pollen.attribution,
+      });
+
+      // Draw the pollen under the place names so labels stay readable.
+      const firstLabel = map.getStyle().layers.find((l) => l.type === "symbol");
+      map.addLayer({
+        id: "pollen",
+        type: "fill",
+        source: "pollen",
+        "source-layer": "pollen",
+        paint: {
+          "fill-color": fillColor("grass_tot"),
+          "fill-opacity": 0.6,
+          "fill-antialias": false, // no hairlines between neighbouring cells
+        },
+      }, firstLabel?.id);
+
+      // Pick a species: only the colours change, no new download.
+      const speciesSelect = document.getElementById("species");
+      speciesSelect.onchange = () =>
+        map.setPaintProperty("pollen", "fill-color", fillColor(speciesSelect.value));
+
+      // Pick a day: swap in that day's tile URL from steps[].
+      const daySelect = document.getElementById("day");
+      for (const s of pollen.steps) daySelect.add(new Option(s.step, s.step));
+      daySelect.onchange = () => {
+        const step = pollen.steps.find((s) => s.step === daySelect.value);
+        map.getSource("pollen").setTiles(step.tiles);
+      };
+
+      // Click a cell to see the number behind the colour.
+      map.on("click", "pollen", (e) => {
+        const value = e.features[0].properties[speciesSelect.value] ?? 0;
+        new maplibregl.Popup().setLngLat(e.lngLat)
+          .setHTML(`${value.toFixed(0)} grains/m³`).addTo(map);
+      });
+    });
+  </script>
+</body>
+</html>
